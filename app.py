@@ -15,6 +15,120 @@ import os
 import io
 import zipfile
 
+def _nice_label(attr_name: str) -> str:
+    return attr_name.replace("_", " ").title()
+
+
+import io
+
+def render_group_of_six_buttons(
+    cables: dict,
+    cable_type: str,
+    attr_names: list,
+    group_key: str,
+):
+    """
+    Renders 6 buttons (2 rows × 3 cols).
+    Each button:
+      • starts as "Generate <attr>"
+      • becomes "Download <attr>" after generation
+    """
+
+    # Ensure fixed layout
+    attr_names = (attr_names + [None] * 6)[:6]
+
+    def has_data(attr):
+        if attr is None:
+            return False
+        for cable in cables.values():
+            if cable.type == cable_type:
+                df = getattr(cable, attr, None)
+                if isinstance(df, pd.DataFrame) and not df.empty:
+                    return True
+        return False
+
+    rows = [st.columns(3), st.columns(3)]
+
+    for i, attr in enumerate(attr_names):
+        col = rows[i // 3][i % 3]
+
+        if attr is None:
+            col.empty()
+            continue
+
+        nice_label = attr.replace("_", " ").title()
+        state_key = f"{group_key}_{attr}"
+        csv_key   = f"csv_{state_key}"
+        ready_key = f"ready_{state_key}"
+
+        disabled = not has_data(attr)
+        if st.session_state.get(ready_key, False):
+            col.download_button(
+                label=f"Download {nice_label}",
+                data=st.session_state[csv_key],
+                file_name=f"{cable_type.lower()}_{attr}.csv",
+                mime="text/csv",
+                key=f"dl_{state_key}",
+            )
+        else:
+            if col.button(
+                label=f"Generate {nice_label}",
+                disabled=disabled,
+                key=f"gen_{state_key}",
+            ):
+                df, err = build_master_dataframe(
+                    cables,
+                    cable_type=cable_type,
+                    attr_name=attr,
+                )
+
+                if err:
+                    col.warning(err)
+                else:
+                    buf = io.StringIO()
+                    df.to_csv(buf, index=False)
+                    st.session_state[csv_key] = buf.getvalue()
+                    st.session_state[ready_key] = True
+
+
+
+def build_master_dataframe(
+    cables: dict,
+    cable_type: str,
+    attr_name: str,
+):
+
+    dfs = []
+
+    for cable in cables.values():
+        if cable.type != cable_type:
+            continue
+
+        df = getattr(cable, attr_name, None)
+        if df is None or df.empty:
+            continue
+        tmp = df.iloc[:, :2].copy()
+        # Rename columns:
+        shared_col = tmp.columns[0]
+        tmp.columns = [shared_col, cable.serial_number]
+        dfs.append(tmp)
+    if not dfs:
+            return None, f"No {attr_name} data found for {cable_type} cables."
+
+    master_df = dfs[0]
+    key_col = master_df.columns[0]
+
+    for df in dfs[1:]:
+        master_df = master_df.merge(df, on=key_col, how="outer")
+
+    # Sort by the shared column (numeric if possible)
+    master_df[key_col] = pd.to_numeric(master_df[key_col], errors="ignore")
+    master_df = master_df.sort_values(by=key_col)
+
+    return master_df, None
+
+
+
 def build_zip_for_cable(cable, base_map=None, temp_root="."):
     """
     Returns (zip_buffer, zip_name) if success, else (None, error_msg).
@@ -121,7 +235,22 @@ if uploaded_files:
                 cables[serial_number] = cable
 
             process_csv(cable, uploaded_file)
+    
+    TESLA_ATTRS     = ["leakage", "leakage_1s", "resistance", "inv_resistance", "continuity", "inv_continuity"]
+    PARADISE_ATTRS  = ["leakage", "leakage_1s", "resistance", "inv_resistance", "continuity", "inv_continuity"]
 
+    st.subheader("Master CSV Files")
+    
+    st.markdown("### Tesla")
+    render_group_of_six_buttons(cables, cable_type="Tesla", attr_names=TESLA_ATTRS, group_key="tesla")
+
+    st.markdown("### Paradise")
+    render_group_of_six_buttons(cables, cable_type="Paradise", attr_names=PARADISE_ATTRS, group_key="paradise")
+
+    st.divider()
+
+
+    
     COL_LAYOUT = [1, 1, 1, 5, 5, 2]
     st.subheader("Processed Cables")
 
@@ -148,6 +277,10 @@ if uploaded_files:
         
         show_key_leak = f"show_leakage_{cable.serial_number}"
         show_key_1s   = f"show_1s_{cable.serial_number}"
+        
+        has_leakage   = isinstance(getattr(cable, "leakage", None), pd.DataFrame) and not getattr(cable, "leakage").empty
+        has_leakage_1s = isinstance(getattr(cable, "leakage_1s", None), pd.DataFrame) and not getattr(cable, "leakage_1s").empty
+
 
         if show_key_leak not in st.session_state:
             st.session_state[show_key_leak] = False
@@ -157,14 +290,14 @@ if uploaded_files:
         if cols[3].button(
             "Generate",
             key=f"leakage_{cable.serial_number}",
-            disabled=st.session_state[show_key_leak]
+            disabled=not has_leakage or st.session_state[show_key_leak]
         ):
             st.session_state[show_key_leak] = True
             
         if cols[4].button(
             "Generate",
             key=f"leakage_1s_{cable.serial_number}",
-            disabled=st.session_state[show_key_1s]
+            disabled=not has_leakage_1s or st.session_state[show_key_1s]
         ):
             st.session_state[show_key_1s] = True
         
@@ -200,3 +333,5 @@ if uploaded_files:
                     disabled=True,
                     help=str(zip_name_or_err)  # this is the error message
                 )
+
+

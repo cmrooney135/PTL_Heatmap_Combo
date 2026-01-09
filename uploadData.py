@@ -197,6 +197,7 @@ def process_csv(cable, fname):
             filtered_path = filtered_path / filtered_name
             cable.leakage_1s = df_extracted
             df_extracted.to_csv(filtered_path, index=False)
+
     elif(is_resistance(test_name) or is_inv_resistance(test_name) or is_continuity(test_name) or is_inv_continuity(test_name)):
         col_from, col_measured, col_expected = "From Points", "Value Measured", "Value Expected"
         channels, measured_r, expected_r = [], [], []
